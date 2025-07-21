@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Organizer & Search</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <style>
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="font-inter bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        function App() {
+            const [directoryPath, setDirectoryPath] = React.useState('');
+            const [filesToReview, setFilesToReview] = React.useState([]);
+            const [loading, setLoading] = React.useState(false);
+            const [error, setError] = React.useState('');
+            const [view, setView] = React.useState('input');
+            
+            const [searchQuery, setSearchQuery] = React.useState('');
+            const [searchResults, setSearchResults] = React.useState([]);
+            const [isSearching, setIsSearching] = React.useState(false);
+            const [isSettingsOpen, setIsSettingsOpen] = React.useState(false);
+            const [isNamesEditorOpen, setIsNamesEditorOpen] = React.useState(false);
+            const [namesContent, setNamesContent] = React.useState('');
+
+            const [browseResults, setBrowseResults] = React.useState([]);
+            const [currentPage, setCurrentPage] = React.useState(1);
+            const [totalPages, setTotalPages] = React.useState(0);
+            const [totalFiles, setTotalFiles] = React.useState(0);
+
+            const handleProcessDirectory = async () => {
+                if (!directoryPath) {
+                    alert('Please enter a directory path.');
+                    return;
+                }
+                setLoading(true);
+                setError('');
+                try {
+                    const response = await fetch('http://localhost:5000/process_files', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ directory_path: directoryPath }),
+                    });
+                    if (!response.ok) throw new Error((await response.json()).error || 'Failed to process files.');
+                    const data = await response.json();
+                    if (data.length === 0) {
+                        alert('No new files found to process. Previously processed files are already in the database.');
+                        setView('browse');
+                        return;
+                    }
+                    setFilesToReview(data.map(file => ({ ...file, status: 'pending', currentProposedName: file.proposedName })));
+                    setView('review');
+                } catch (err) {
+                    setError(err.message);
+                    alert(`Error: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            const handleSearch = async (e) => {
+                e.preventDefault();
+                if (!searchQuery) return;
+                setIsSearching(true);
+                setView('search');
+                try {
+                    const response = await fetch(`http://localhost:5000/search?q=${encodeURIComponent(searchQuery)}`);
+                    const data = await response.json();
+                    setSearchResults(data);
+                } catch (err) {
+                    alert(`Search failed: ${err.message}`);
+                } finally {
+                    setIsSearching(false);
+                }
+            };
+            
+            const handleBrowse = async (page) => {
+                setView('browse');
+                setLoading(true);
+                try {
+                    const response = await fetch(`http://localhost:5000/browse_files?page=${page}`);
+                    const data = await response.json();
+                    setBrowseResults(data.files);
+                    setCurrentPage(data.current_page);
+                    setTotalPages(data.total_pages);
+                    setTotalFiles(data.total_files);
+                } catch (err) {
+                     alert(`Failed to browse files: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAction = (index, status) => {
+                const updatedFiles = [...filesToReview];
+                updatedFiles[index].status = status;
+                setFilesToReview(updatedFiles);
+            };
+
+            const handleProposedNameChange = (e, index) => {
+                const updatedFiles = [...filesToReview];
+                updatedFiles[index].currentProposedName = e.target.value;
+                updatedFiles[index].status = 'modified';
+                setFilesToReview(updatedFiles);
+            };
+
+            const handleOpenFile = async (filePath) => {
+                if (!filePath) return;
+                try {
+                    const response = await fetch('http://localhost:5000/open_file', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_path: filePath }),
+                    });
+                    if (!response.ok) throw new Error((await response.json()).error || 'Failed to open file.');
+                } catch (err) {
+                    alert(`Error opening file: ${err.message}`);
+                }
+            };
+
+            const handleSaveAllChanges = async () => {
+                const changesToApply = filesToReview.filter(file => file.status !== 'pending' && file.status !== 'skipped');
+                if (changesToApply.length === 0) {
+                    alert("No changes to apply.");
+                    return;
+                }
+                if (!confirm(`Are you sure you want to apply changes to ${changesToApply.length} file(s)?`)) return;
+                
+                setLoading(true);
+                const renamesToPerform = changesToApply.map(file => ({
+                    original_path: file.originalPath,
+                    proposed_new_name: file.currentProposedName,
+                    status: file.status
+                }));
+
+                try {
+                    const response = await fetch('http://localhost:5000/save_all_changes', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ renames: renamesToPerform }),
+                    });
+                    const result = await response.json();
+                    let resultMessage = `Renaming complete! Successful: ${result.successful_renames}.`;
+                    if (result.failed_renames.length > 0) {
+                        const failedList = result.failed_renames.map(f => `${f.original}: ${f.reason}`).join('\n');
+                        resultMessage += `\n\nFailed: ${result.failed_renames.length}\n${failedList}`;
+                    }
+                    alert(resultMessage);
+                    setView('browse');
+                } catch (err) {
+                    alert(`Error saving changes: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleClearCache = async (scope) => {
+                let url, body = null, confirmationMessage;
+                if (scope === 'all') {
+                    confirmationMessage = 'Are you absolutely sure you want to clear the entire cache? This will remove all records of processed files and cannot be undone.';
+                    if (!confirm(confirmationMessage)) return;
+                    url = 'http://localhost:5000/clear_database';
+                } else if (scope === 'directory') {
+                    if (!directoryPath) { alert('Please enter a directory path first.'); return; }
+                    confirmationMessage = `Are you sure you want to clear the cache for the directory: ${directoryPath}?`;
+                    if (!confirm(confirmationMessage)) return;
+                    url = 'http://localhost:5000/clear_directory_cache';
+                    body = JSON.stringify({ directory_path: directoryPath });
+                } else return;
+
+                try {
+                    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+                    if (!response.ok) throw new Error('Failed to clear cache on the server.');
+                    alert('Cache cleared successfully. The application will now restart.');
+                    setDirectoryPath(''); setFilesToReview([]); setSearchQuery(''); setSearchResults([]); setView('input'); setIsSettingsOpen(false);
+                } catch (err) {
+                    alert(`Error clearing cache: ${err.message}`);
+                }
+            };
+
+            const openNamesEditor = async () => {
+                if (!directoryPath) { alert('Please enter a directory path first.'); return; }
+                try {
+                    const response = await fetch('http://localhost:5000/get_names', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ directory_path: directoryPath }) });
+                    const data = await response.json();
+                    if (response.ok) { setNamesContent(data.names_content); setIsNamesEditorOpen(true); } 
+                    else { throw new Error(data.error || 'Failed to load names file.'); }
+                } catch (err) {
+                    alert(`Error: ${err.message}`);
+                }
+            };
+
+            const saveNamesFile = async () => {
+                try {
+                    const response = await fetch('http://localhost:5000/save_names', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ directory_path: directoryPath, names_content: namesContent }) });
+                    const data = await response.json();
+                    if (response.ok) { alert('Names file saved successfully.'); setIsNamesEditorOpen(false); } 
+                    else { throw new Error(data.error || 'Failed to save names file.'); }
+                } catch (err) {
+                    alert(`Error: ${err.message}`);
+                }
+            };
+            
+            const getStatusColor = (status) => {
+                switch(status) {
+                    case 'accepted': return 'border-green-500';
+                    case 'modified': return 'border-blue-500';
+                    case 'skipped': return 'border-gray-300 bg-gray-50';
+                    case 'marked_for_deletion': return 'border-red-500 bg-red-50';
+                    default: return 'border-gray-200';
+                }
+            }
+            
+            const getRelativePath = (fullPath, basePath) => {
+                const normalizedFullPath = fullPath.replace(/\\/g, '/');
+                const normalizedBasePath = basePath.replace(/\\/g, '/');
+                if (normalizedFullPath.startsWith(normalizedBasePath)) {
+                    let relative = normalizedFullPath.substring(normalizedBasePath.length);
+                    if (relative.startsWith('/')) {
+                        relative = relative.substring(1);
+                    }
+                    // Return only the directory part of the relative path
+                    return relative.substring(0, relative.lastIndexOf('/')) || '.';
+                }
+                return '...';
+            };
+
+            return (
+                <div className="min-h-screen p-4 sm:p-6 md:p-8">
+                    <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow-lg border border-gray-200">
+                        <div className="p-6 border-b border-gray-200 relative">
+                             <h1 className="text-3xl font-extrabold text-center text-indigo-700 mb-4">File Organizer & Search</h1>
+                            <div className="absolute top-4 right-4">
+                                <button onClick={() => setIsSettingsOpen(!isSettingsOpen)} className="px-3 py-1 bg-gray-200 text-gray-700 text-sm rounded-md hover:bg-gray-300">Settings</button>
+                                {isSettingsOpen && (
+                                    <div className="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg border z-10">
+                                        <div className="py-1">
+                                            <button onClick={openNamesEditor} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" disabled={!directoryPath}>Edit Names List</button>
+                                            <hr className="my-1"/>
+                                            <button onClick={() => handleClearCache('directory')} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" disabled={!directoryPath}>Clear Directory Cache</button>
+                                            <button onClick={() => handleClearCache('all')} className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50">Clear Entire Cache</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                            <form onSubmit={handleSearch} className="flex w-full max-w-2xl mx-auto">
+                                <input type="search" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search for files..." className="flex-grow p-3 border border-gray-300 rounded-l-lg focus:ring-2 focus:ring-indigo-500"/>
+                                <button type="submit" className="bg-indigo-600 text-white p-3 rounded-r-lg hover:bg-indigo-700" disabled={isSearching}>{isSearching ? <div className="loader"></div> : 'Search'}</button>
+                            </form>
+                        </div>
+
+                        <div className="p-6">
+                            {view === 'input' && (
+                                <div className="flex flex-col items-center space-y-4 text-center">
+                                    <p className="text-lg text-gray-600 mb-2">Enter a directory path to process new files.</p>
+                                    <div className="flex w-full max-w-md">
+                                        <input type="text" value={directoryPath} onChange={(e) => setDirectoryPath(e.target.value)} placeholder="e.g., /Users/yourname/Documents" className="flex-grow p-3 border border-gray-300 rounded-l-lg focus:ring-2 focus:ring-indigo-500"/>
+                                        <button onClick={handleProcessDirectory} className="bg-indigo-600 text-white p-3 rounded-r-lg hover:bg-indigo-700" disabled={loading}>{loading ? <div className="loader"></div> : 'Process'}</button>
+                                    </div>
+                                    <p className="text-gray-600">or</p>
+                                    <button onClick={() => handleBrowse(1)} className="px-6 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700" disabled={loading}>Browse All Processed Files</button>
+                                </div>
+                            )}
+
+                            {view === 'review' && (
+                                <div className="space-y-6">
+                                    <div className="text-center">
+                                        <h2 className="text-3xl font-bold text-indigo-700">Review New Files</h2>
+                                        <p className="text-lg text-gray-600 mt-1">Found {filesToReview.length} new files to review.</p>
+                                    </div>
+                                    <div className="space-y-4">
+                                        {filesToReview.map((file, index) => (
+                                            <div key={file.originalPath} className={`p-4 rounded-lg border-2 shadow-sm transition-all ${getStatusColor(file.status)}`}>
+                                                <div className="flex justify-between items-start gap-4">
+                                                    <div>
+                                                        <p className="font-bold text-gray-800 break-words">{file.originalName}</p>
+                                                        <p className="text-gray-500 font-normal text-sm">In: {getRelativePath(file.originalPath, directoryPath)}</p>
+                                                    </div>
+                                                    <button onClick={() => handleOpenFile(file.originalPath)} className="px-3 py-1 bg-gray-200 text-gray-700 text-sm rounded-md hover:bg-gray-300 flex-shrink-0">Open</button>
+                                                </div>
+                                                <div className="text-sm text-gray-600 mt-2 space-y-1">
+                                                    <p><span className="font-semibold">Topic:</span> {file.llmTopic}</p>
+                                                    <p><span className="font-semibold">Synopsis:</span> <i>{file.synopsis}</i></p>
+                                                    {file.speakers && file.speakers.length > 0 && (<p><span className="font-semibold">Speakers:</span> {file.speakers.join(', ')}</p>)}
+                                                </div>
+                                                <div className="mt-4 flex flex-col sm:flex-row gap-2 items-center">
+                                                    <input type="text" value={file.currentProposedName} onChange={(e) => handleProposedNameChange(e, index)} className="w-full sm:flex-grow p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500" disabled={file.status === 'marked_for_deletion'}/>
+                                                    <div className="flex gap-2 flex-shrink-0">
+                                                        <button onClick={() => handleAction(index, 'accepted')} className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600">Accept</button>
+                                                        <button onClick={() => handleAction(index, 'skipped')} className="px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600">Skip</button>
+                                                        <button onClick={() => handleAction(index, 'marked_for_deletion')} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">Delete</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex justify-center pt-4">
+                                         <button onClick={handleSaveAllChanges} className="px-8 py-3 bg-purple-600 text-white rounded-full hover:bg-purple-700 text-xl font-bold shadow-lg" disabled={loading}>{loading ? 'Saving...' : 'Save All Changes'}</button>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            { (view === 'search' || view === 'browse') && (
+                                <div className="space-y-4">
+                                    <h2 className="text-2xl font-bold text-center text-gray-700">
+                                        {view === 'search' ? 'Search Results' : `All Processed Files (${totalFiles})`}
+                                    </h2>
+                                    {loading ? <div className="flex justify-center"><div className="loader"></div></div> :
+                                        (view === 'search' ? searchResults : browseResults).length > 0 ? (
+                                            <div>
+                                                {/* Reusing LexicalResults for both search and browse */}
+                                                <ul className="space-y-3">
+                                                    {(view === 'search' ? searchResults : browseResults).map(result => (
+                                                        <li key={result.id} className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                                                            <div className="flex justify-between items-start">
+                                                                <button onClick={() => handleOpenFile(result.file_path || result.original_path)} className="font-semibold text-indigo-600 hover:underline text-left">{result.new_name || result.original_name}</button>
+                                                                <span className="text-xs text-gray-500 flex-shrink-0 ml-4">{result.created_at.substring(0, 10)}</span>
+                                                            </div>
+                                                            <p className="mt-2 text-sm text-gray-700">{result.summary}</p>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                                {view === 'browse' && totalPages > 1 && (
+                                                    <div className="flex justify-between items-center mt-6">
+                                                        <button onClick={() => handleBrowse(currentPage - 1)} disabled={currentPage <= 1} className="px-4 py-2 bg-white border border-gray-300 rounded-md disabled:opacity-50 text-sm font-medium">Previous</button>
+                                                        <p className="text-gray-700 text-sm">Page {currentPage} of {totalPages}</p>
+                                                        <button onClick={() => handleBrowse(currentPage + 1)} disabled={currentPage >= totalPages} className="px-4 py-2 bg-white border border-gray-300 rounded-md disabled:opacity-50 text-sm font-medium">Next</button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : <p className="text-center text-gray-500">{isSearching ? 'Searching...' : 'No files found.'}</p>
+                                     }
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {isNamesEditorOpen && (
+                        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative">
+                                <h3 className="text-lg font-semibold text-gray-800 mb-4">Edit Names List</h3>
+                                <p className="text-sm text-gray-600 mb-4">Edit the `names.txt` file for this directory. Add one correctly spelled name per line.</p>
+                                <textarea value={namesContent} onChange={(e) => setNamesContent(e.target.value)} className="w-full h-64 p-2 border border-gray-300 rounded-md font-mono text-sm" placeholder="Bob Keith&#10;Jane Doe"/>
+                                <div className="flex justify-end space-x-3 mt-4">
+                                    <button onClick={() => setIsNamesEditorOpen(false)} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancel</button>
+                                    <button onClick={saveNamesFile} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">Save Names</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
