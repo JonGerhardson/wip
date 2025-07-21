@@ -1,5 +1,7 @@
 # Personal Knowledge Base & RAG Engine
 
+## WORK IN PROGERESS. DONT UASE IT OR AT LEAST DON'T BLAME ME ABOUT IT. 
+
 ## Project Goals
 
 This project aims to create a powerful, local-first document management system inspired by applications like `paperless-ngx`, but with a core focus on modern AI capabilities. The primary goal is to transform a directory of unorganized, mixed-media files into a fully searchable, intelligent knowledge base that you can "talk to."
